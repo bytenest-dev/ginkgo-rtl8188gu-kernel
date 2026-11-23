@@ -14,10 +14,13 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     steps:
+      - name: Update apt package indexes
+        timeout-minutes: 10
+        run: sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex git zip device-tree-compiler clang lld llvm libssl-dev libelf-dev python3 kmod
+        timeout-minutes: 20
+        run: sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y bc bison build-essential ccache curl flex git zip device-tree-compiler clang lld llvm libssl-dev libelf-dev python3 kmod
 
       - name: Clone kernel, matching toolchains, driver, and packager
         shell: bash
@@ -177,5 +180,6 @@ jobs:
           path: output/Magisk-RTL8188GU-Support.zip
           if-no-files-found: error
           retention-days: 14
+
 
 
