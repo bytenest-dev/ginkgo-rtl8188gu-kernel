@@ -1,0 +1,181 @@
+name: Build ArrowOS 13.1 ginkgo kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex git zip device-tree-compiler clang lld llvm libssl-dev libelf-dev python3 kmod
+
+      - name: Clone kernel, matching toolchains, driver, and packager
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 --branch arrow-13.1 https://github.com/ArrowOS-Devices/android_kernel_xiaomi_ginkgo.git kernel
+          mkdir -p "$HOME/tc"
+          git clone --depth=1 --branch android13 https://github.com/BenzoRom/prebuilts_clang_host_linux-x86.git "$HOME/tc/clang-r450784d"
+          git clone --depth=1 --branch lineage-19.1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git "$HOME/tc/aarch64-linux-android-4.9"
+          git clone --depth=1 --branch lineage-19.1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git "$HOME/tc/arm-linux-androideabi-4.9"
+          git clone --depth=1 https://github.com/McMCCRU/rtl8188gu.git kernel/drivers/net/wireless/realtek/rtl8188gu
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+
+      - name: Patch RTL8188GU integration and kernel config
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('kernel')
+          driver = root / 'drivers/net/wireless/realtek/rtl8188gu'
+          usb = driver / 'os_dep/linux/usb_intf.c'
+          text = usb.read_text()
+          entry = '{USB_DEVICE(0x0bda, 0x2005), .driver_info = RTL8188G},'
+          if '0x2005' not in text:
+              m = re.search(r'(static\s+struct\s+usb_device_id\s+rtw_usb_id_tbl\[\]\s*=\s*\{)', text)
+              if not m:
+                  raise SystemExit('Could not locate rtw_usb_id_tbl[]')
+              text = text[:m.end()] + '\n\t' + entry + text[m.end():]
+              usb.write_text(text)
+
+          kconfig = driver / 'Kconfig'
+          text = kconfig.read_text().replace('config RTL8710B', 'config RTL8188GU')
+          kconfig.write_text(text)
+
+          makefile = driver / 'Makefile'
+          text = makefile.read_text()
+          text = text.replace('obj- := .o', 'obj- := .o')
+          text = re.sub(r'(?m)^CONFIG_PLATFORM_I386_PC\s*=\s*y\s*$', 'CONFIG_PLATFORM_I386_PC = n', text)
+          if 'CONFIG_PLATFORM_I386_PC =' not in text:
+              text += '\nCONFIG_PLATFORM_I386_PC = n\n'
+          for key in ('CONFIG_CONCURRENT_MODE', 'CONFIG_POWER_SAVING'):
+              text = re.sub(rf'(?m)^{key}\s*=\s*\w+\s*$', f'{key} = n', text)
+              if not re.search(rf'(?m)^{key}\s*=', text):
+                  text += f'\n{key} = n\n'
+          flags = 'EXTRA_CFLAGS += -DCONFIG_LITTLE_ENDIAN -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT'
+          if flags not in text:
+              text += '\n' + flags + '\n'
+          makefile.write_text(text)
+
+          realtek_kconfig = root / 'drivers/net/wireless/realtek/Kconfig'
+          text = realtek_kconfig.read_text()
+          source = 'source "drivers/net/wireless/realtek/rtl8188gu/Kconfig"'
+          if source not in text:
+              realtek_kconfig.write_text(text.rstrip() + '\n' + source + '\n')
+          realtek_makefile = root / 'drivers/net/wireless/realtek/Makefile'
+          text = realtek_makefile.read_text()
+          line = 'obj-$(CONFIG_RTL8188GU) += rtl8188gu/'
+          if line not in text:
+              realtek_makefile.write_text(text.rstrip() + '\n' + line + '\n')
+
+          configs = [root / 'arch/arm64/configs/vendor/ginkgo-perf_defconfig', root / 'arch/arm64/configs/ginkgo_defconfig']
+          config = next((p for p in configs if p.is_file()), None)
+          if config is None:
+              raise SystemExit('No active ginkgo defconfig found')
+          print(f'Using defconfig: {config}')
+          keys = {
+              'CONFIG_CFG80211': 'y', 'CONFIG_MAC80211': 'y', 'CONFIG_CFG80211_WEXT': 'y',
+              'CONFIG_WIRELESS_EXT': 'y', 'CONFIG_USB_SUPPORT': 'y', 'CONFIG_USB': 'y',
+              'CONFIG_USB_OTG': 'y', 'CONFIG_USB_STORAGE': 'y', 'CONFIG_RTL8188GU': 'm',
+          }
+          lines = config.read_text().splitlines()
+          for key, val in keys.items():
+              lines = [line for line in lines if not line.startswith(key + '=') and line != '# ' + key + ' is not set']
+              lines.append(f'{key}={val}')
+          config.write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Configure and compile kernel and module
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PATH="$HOME/tc/clang-r450784d/bin:$HOME/tc/aarch64-linux-android-4.9/bin:$HOME/tc/arm-linux-androideabi-4.9/bin:$PATH"
+          cd kernel
+          make O=out ARCH=arm64 vendor/ginkgo-perf_defconfig
+          make O=out ARCH=arm64 olddefconfig
+          for opt in CONFIG_CFG80211 CONFIG_MAC80211 CONFIG_CFG80211_WEXT CONFIG_WIRELESS_EXT CONFIG_USB_SUPPORT CONFIG_USB CONFIG_USB_OTG CONFIG_USB_STORAGE CONFIG_RTL8188GU; do grep -E "^${opt}=" out/.config || true; done
+          make -j"$(nproc)" O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar AS=llvm-as NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE="$HOME/tc/aarch64-linux-android-4.9/bin/aarch64-linux-android-" CROSS_COMPILE_ARM32="$HOME/tc/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-" Image.gz-dtb dtbo.img modules 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          test -s out/arch/arm64/boot/Image.gz-dtb
+          test -s out/arch/arm64/boot/dtbo.img
+          module=$(find out/drivers/net/wireless/realtek/rtl8188gu -name 8188gu.ko -type f -print -quit)
+          test -n "$module" && test -s "$module"
+          expected=$(make -s O=out ARCH=arm64 kernelrelease)
+          actual=$(modinfo -F vermagic "$module" | awk '{print $1}')
+          echo "kernelrelease=$expected module_vermagic=$actual"
+          test "$actual" = "$expected"
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          cp "$module" "$GITHUB_WORKSPACE/output/8188gu.ko"
+          find drivers/net/wireless/realtek/rtl8188gu -type f -name '*.bin' -exec cp -n {} "$GITHUB_WORKSPACE/output/" \;
+          cp out/arch/arm64/boot/Image.gz-dtb out/arch/arm64/boot/dtbo.img "$GITHUB_WORKSPACE/output/"
+
+      - name: Package flashable zips
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp output/Image.gz-dtb AnyKernel3/
+          cp output/dtbo.img AnyKernel3/
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('AnyKernel3/anykernel.sh')
+          s = p.read_text()
+          import re
+          s = re.sub(r'(?m)^device\.name1=.*$', 'device.name1=ginkgo', s)
+          s = re.sub(r'(?m)^block=.*$', 'block=/dev/block/bootdevice/by-name/boot;', s)
+          if 'device.name1=' not in s: s += '\ndevice.name1=ginkgo\n'
+          if 'block=/dev/block/bootdevice/by-name/boot;' not in s: s += '\nblock=/dev/block/bootdevice/by-name/boot;\n'
+          p.write_text(s)
+          PY
+          (cd AnyKernel3 && zip -qr "$GITHUB_WORKSPACE/output/ArrowOS13-ginkgo-RTL8188GU-Kernel.zip" . -x '.git/*' 'README.md' '*placeholder*')
+          module_dir="$GITHUB_WORKSPACE/magisk-module"
+          mkdir -p "$module_dir/system/vendor/lib/modules" "$module_dir/system/vendor/firmware"
+          cp output/8188gu.ko "$module_dir/system/vendor/lib/modules/8188gu.ko"
+          find output -maxdepth 1 -type f -name '*.bin' -exec cp {} "$module_dir/system/vendor/firmware/" \;
+          cat > "$module_dir/module.prop" <<'EOF'
+          id=rtl8188gu_ginkgo
+          name=RTL8188GU Wi-Fi Driver for ginkgo
+          version=1.0
+          versionCode=1
+          author=bytenest-dev
+          description=Realtek RTL8188GU USB Wi-Fi driver module for ArrowOS 13.1 ginkgo
+          EOF
+          cat > "$module_dir/service.sh" <<'EOF'
+          #!/system/bin/sh
+          MODDIR=${0%/*}
+          sleep 10
+          insmod /system/vendor/lib/modules/8188gu.ko
+          EOF
+          chmod 0755 "$module_dir/service.sh"
+          (cd "$module_dir" && zip -qr "$GITHUB_WORKSPACE/output/Magisk-RTL8188GU-Support.zip" .)
+          test -s output/ArrowOS13-ginkgo-RTL8188GU-Kernel.zip
+          test -s output/Magisk-RTL8188GU-Support.zip
+
+      - name: Upload kernel ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArrowOS13-ginkgo-RTL8188GU-Kernel
+          path: output/ArrowOS13-ginkgo-RTL8188GU-Kernel.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Magisk module ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Magisk-RTL8188GU-Support
+          path: output/Magisk-RTL8188GU-Support.zip
+          if-no-files-found: error
+          retention-days: 14
+
+
