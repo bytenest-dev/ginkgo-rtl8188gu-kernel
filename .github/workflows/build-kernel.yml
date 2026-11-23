@@ -115,7 +115,7 @@ jobs:
           test -s out/arch/arm64/boot/dtbo.img
           module=$(find out/drivers/net/wireless/realtek/rtl8188gu -name 8188gu.ko -type f -print -quit)
           test -n "$module" && test -s "$module"
-          expected=$(make -s O=out ARCH=arm64 kernelrelease)
+          expected=$(make -s O=out ARCH=arm64 CROSS_COMPILE="$HOME/tc/aarch64-linux-android-4.9/bin/aarch64-linux-android-" CROSS_COMPILE_ARM32="$HOME/tc/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-" kernelrelease)
           actual=$(modinfo -F vermagic "$module" | awk '{print $1}')
           echo "kernelrelease=$expected module_vermagic=$actual"
           test "$actual" = "$expected"
@@ -180,6 +180,7 @@ jobs:
           path: output/Magisk-RTL8188GU-Support.zip
           if-no-files-found: error
           retention-days: 14
+
 
 
 
