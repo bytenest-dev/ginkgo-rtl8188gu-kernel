@@ -92,7 +92,8 @@ jobs:
           keys = {
               'CONFIG_CFG80211': 'y', 'CONFIG_MAC80211': 'y', 'CONFIG_CFG80211_WEXT': 'y',
               'CONFIG_WIRELESS_EXT': 'y', 'CONFIG_USB_SUPPORT': 'y', 'CONFIG_USB': 'y',
-              'CONFIG_USB_OTG': 'y', 'CONFIG_USB_STORAGE': 'y', 'CONFIG_RTL8188GU': 'm',
+              'CONFIG_USB_OTG': 'y', 'CONFIG_USB_STORAGE': 'y', 'CONFIG_RTL8188GU': 'y',
+              'CONFIG_MODULE_SIG': 'n',
           }
           lines = config.read_text().splitlines()
           for key, val in keys.items():
@@ -109,18 +110,13 @@ jobs:
           cd kernel
           make O=out ARCH=arm64 vendor/ginkgo-perf_defconfig
           make O=out ARCH=arm64 olddefconfig
-          for opt in CONFIG_CFG80211 CONFIG_MAC80211 CONFIG_CFG80211_WEXT CONFIG_WIRELESS_EXT CONFIG_USB_SUPPORT CONFIG_USB CONFIG_USB_OTG CONFIG_USB_STORAGE CONFIG_RTL8188GU; do grep -E "^${opt}=" out/.config || true; done
+          for opt in CONFIG_CFG80211 CONFIG_MAC80211 CONFIG_CFG80211_WEXT CONFIG_WIRELESS_EXT CONFIG_USB_SUPPORT CONFIG_USB CONFIG_USB_OTG CONFIG_USB_STORAGE CONFIG_RTL8188GU CONFIG_MODULE_SIG; do grep -E "^${opt}=" out/.config || grep -E "^# ${opt} is not set$" out/.config || true; done
+          grep -qx 'CONFIG_RTL8188GU=y' out/.config
+          grep -qx '# CONFIG_MODULE_SIG is not set' out/.config
           make -j"$(nproc)" O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar AS=llvm-as NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE="$HOME/tc/aarch64-linux-android-4.9/bin/aarch64-linux-android-" CROSS_COMPILE_ARM32="$HOME/tc/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-" Image.gz-dtb dtbo.img modules 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
           test -s out/arch/arm64/boot/Image.gz-dtb
           test -s out/arch/arm64/boot/dtbo.img
-          module=$(find out/drivers/net/wireless/realtek/rtl8188gu -name 8188gu.ko -type f -print -quit)
-          test -n "$module" && test -s "$module"
-          expected=$(make -s O=out ARCH=arm64 CROSS_COMPILE="$HOME/tc/aarch64-linux-android-4.9/bin/aarch64-linux-android-" CROSS_COMPILE_ARM32="$HOME/tc/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-" kernelrelease)
-          actual=$(modinfo -F vermagic "$module" | awk '{print $1}')
-          echo "kernelrelease=$expected module_vermagic=$actual"
-          test "$actual" = "$expected"
           mkdir -p "$GITHUB_WORKSPACE/output"
-          cp "$module" "$GITHUB_WORKSPACE/output/8188gu.ko"
           find drivers/net/wireless/realtek/rtl8188gu -type f -name '*.bin' -exec cp -n {} "$GITHUB_WORKSPACE/output/" \;
           cp out/arch/arm64/boot/Image.gz-dtb out/arch/arm64/boot/dtbo.img "$GITHUB_WORKSPACE/output/"
 
@@ -143,8 +139,7 @@ jobs:
           PY
           (cd AnyKernel3 && zip -qr "$GITHUB_WORKSPACE/output/ArrowOS13-ginkgo-RTL8188GU-Kernel.zip" . -x '.git/*' 'README.md' '*placeholder*')
           module_dir="$GITHUB_WORKSPACE/magisk-module"
-          mkdir -p "$module_dir/system/vendor/lib/modules" "$module_dir/system/vendor/firmware"
-          cp output/8188gu.ko "$module_dir/system/vendor/lib/modules/8188gu.ko"
+          mkdir -p "$module_dir/system/vendor/firmware"
           find output -maxdepth 1 -type f -name '*.bin' -exec cp {} "$module_dir/system/vendor/firmware/" \;
           cat > "$module_dir/module.prop" <<'EOF'
           id=rtl8188gu_ginkgo
@@ -152,15 +147,8 @@ jobs:
           version=1.0
           versionCode=1
           author=bytenest-dev
-          description=Realtek RTL8188GU USB Wi-Fi driver module for ArrowOS 13.1 ginkgo
+          description=Firmware support for the RTL8188GU driver built into the ArrowOS 13.1 ginkgo kernel
           EOF
-          cat > "$module_dir/service.sh" <<'EOF'
-          #!/system/bin/sh
-          MODDIR=${0%/*}
-          sleep 10
-          insmod /system/vendor/lib/modules/8188gu.ko
-          EOF
-          chmod 0755 "$module_dir/service.sh"
           (cd "$module_dir" && zip -qr "$GITHUB_WORKSPACE/output/Magisk-RTL8188GU-Support.zip" .)
           test -s output/ArrowOS13-ginkgo-RTL8188GU-Kernel.zip
           test -s output/Magisk-RTL8188GU-Support.zip
