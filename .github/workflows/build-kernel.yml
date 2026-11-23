@@ -59,6 +59,7 @@ jobs:
 
           makefile = driver / 'Makefile'
           text = makefile.read_text()
+          text = text.replace('export TopDIR ?= ', 'export TopDIR ?= ')
           text = text.replace('obj- := .o', 'obj- := .o')
           text = re.sub(r'(?m)^CONFIG_PLATFORM_I386_PC\s*=\s*y\s*$', 'CONFIG_PLATFORM_I386_PC = n', text)
           if 'CONFIG_PLATFORM_I386_PC =' not in text:
@@ -179,6 +180,7 @@ jobs:
           path: output/Magisk-RTL8188GU-Support.zip
           if-no-files-found: error
           retention-days: 14
+
 
 
 
