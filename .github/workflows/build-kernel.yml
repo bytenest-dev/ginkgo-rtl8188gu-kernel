@@ -59,8 +59,8 @@ jobs:
 
           makefile = driver / 'Makefile'
           text = makefile.read_text()
-          text = text.replace('export TopDIR ?= ', 'export TopDIR ?= ')
-          text = text.replace('obj- := .o', 'obj- := .o')
+          text = text.replace('export TopDIR ?= $(shell pwd)', 'export TopDIR ?= $(src)')
+          text = text.replace('obj-$(CONFIG_RTL8710BU) := $(MODULE_NAME).o', 'obj-$(CONFIG_RTL8188GU) := $(MODULE_NAME).o')
           text = re.sub(r'(?m)^CONFIG_PLATFORM_I386_PC\s*=\s*y\s*$', 'CONFIG_PLATFORM_I386_PC = n', text)
           if 'CONFIG_PLATFORM_I386_PC =' not in text:
               text += '\nCONFIG_PLATFORM_I386_PC = n\n'
